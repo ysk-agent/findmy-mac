@@ -35,10 +35,28 @@ echo "PID after launch: '$PID'"
 
 TOP=$(adb shell dumpsys activity activities 2>/dev/null | grep "topResumedActivity" | head -1)
 echo "top activity: $TOP"
-if echo "$TOP" | grep -q "com.prelina.findmynet/.MainActivityNew"; then
+if echo "$TOP" | grep -q "com.prelina.findmynet.MainActivityNew"; then
   echo "OK: MainActivityNew is top resumed activity"
 else
   note_fail "MainActivityNew is not the top resumed activity"
+fi
+
+# A system "app isn't responding" dialog (in practice the launcher ANR-ing
+# on the emulator) would otherwise sit on top of the screenshot. If one is
+# present, tap its "Wait" button.
+adb shell uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1 || true
+adb pull /sdcard/window_dump.xml window_dump.xml >/dev/null 2>&1 || true
+if grep -q "isn't responding" window_dump.xml 2>/dev/null; then
+  NODE=$(grep -o 'text="Wait"[^>]*' window_dump.xml | head -1)
+  BOUNDS=$(echo "$NODE" | grep -o 'bounds="\[[0-9,]*\]\[[0-9,]*\]"' | head -1)
+  NUMS=$(echo "$BOUNDS" | grep -o '[0-9]\+')
+  set -- $NUMS
+  if [ $# -eq 4 ]; then
+    CX=$(( ($1 + $3) / 2 )); CY=$(( ($2 + $4) / 2 ))
+    echo "ANR dialog detected; tapping 'Wait' at $CX,$CY"
+    adb shell input tap "$CX" "$CY" || true
+    sleep 2
+  fi
 fi
 
 adb exec-out screencap -p > screenshot-login.png 2>/dev/null || true

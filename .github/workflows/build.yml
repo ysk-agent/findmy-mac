@@ -81,6 +81,7 @@ jobs:
           path: |
             logcat.txt
             dumpsys-activities.txt
+            window_dump.xml
             screenshot-login.png
           if-no-files-found: warn
 
