@@ -30,8 +30,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FindMyNet"
         android:usesCleartextTraffic="false">
+        <!-- Fully-qualified class names are required: the applicationId
+             (dev.moriya.findmymac) differs from the source package
+             (com.prelina.findmynet), so relative ".MainActivityNew" would
+             resolve to a class that does not exist. -->
         <activity
-            android:name=".MainActivityNew"
+            android:name="com.prelina.findmynet.MainActivityNew"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.FindMyNet">
@@ -43,7 +47,7 @@
         </activity>
         <!-- Map page - shows the target device location -->
         <activity
-            android:name=".MapActivity"
+            android:name="com.prelina.findmynet.MapActivity"
             android:exported="false"
             android:label="FindMyNet"
             android:theme="@style/Theme.FindMyNet.AppCompat" />

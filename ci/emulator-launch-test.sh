@@ -23,7 +23,10 @@ note_fail() { echo "LAUNCH-TEST FAILURE: $1"; FAIL=1; }
 adb install -r "$APK" || note_fail "adb install failed"
 
 adb logcat -c || true
-adb shell am start -n $PKG/.MainActivityNew
+# The launcher activity's class lives in the source package
+# (com.prelina.findmynet), not under the applicationId, so the component
+# must be named in full.
+adb shell am start -n $PKG/com.prelina.findmynet.MainActivityNew
 sleep 8
 
 PID=$(adb shell pidof $PKG | tr -d '\r\n')
@@ -32,7 +35,7 @@ echo "PID after launch: '$PID'"
 
 TOP=$(adb shell dumpsys activity activities 2>/dev/null | grep "topResumedActivity" | head -1)
 echo "top activity: $TOP"
-if echo "$TOP" | grep -q "$PKG/.MainActivityNew"; then
+if echo "$TOP" | grep -q "com.prelina.findmynet/.MainActivityNew"; then
   echo "OK: MainActivityNew is top resumed activity"
 else
   note_fail "MainActivityNew is not the top resumed activity"
