@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Batch 2 permission trim: INTERNET is the only permission left.
+         Find My location fetching (OkHttp) and MapLibre tile loading
+         both need only INTERNET. ACCESS_NETWORK_STATE is NOT declared:
+         neither OkHttp nor the MapLibre Android SDK requires it (the
+         app makes no connectivity-state decisions of its own).
+         Removed in this batch: ACCESS_FINE/COARSE/BACKGROUND_LOCATION,
+         FOREGROUND_SERVICE(+_LOCATION), POST_NOTIFICATIONS (dead
+         IC3Service / own-location blue dot), and the removed map SDK's set:
+         ACCESS_WIFI_STATE, CHANGE_WIFI_STATE, WRITE_SETTINGS,
+         WRITE/READ_EXTERNAL_STORAGE. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Batch 3 backup exclusion: allowBackup="false" - the encrypted
+         session store (and everything else in this single-purpose personal
+         app) must never leave the device via Auto Backup or device
+         transfer. The dataExtractionRules / fullBackupContent files are
+         kept pointing at rules that exclude every domain as defence in
+         depth, in case allowBackup is ever flipped back. -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@android:drawable/ic_menu_mylocation"
+        android:label="@string/app_name"
+        android:roundIcon="@android:drawable/ic_menu_mylocation"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.FindMyNet"
+        android:usesCleartextTraffic="false">
+        <activity
+            android:name=".MainActivityNew"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.FindMyNet">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Map page - shows the target device location -->
+        <activity
+            android:name=".MapActivity"
+            android:exported="false"
+            android:label="FindMyNet"
+            android:theme="@style/Theme.FindMyNet.AppCompat" />
+    </application>
+
+</manifest>
