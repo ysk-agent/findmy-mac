@@ -3,10 +3,11 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -91,3 +92,36 @@ jobs:
           name: findmy-mac-apk
           path: app/build/outputs/apk/release/findmy-mac.apk
           if-no-files-found: error
+
+      # Tag builds (vX.Y.Z) publish a GitHub Release carrying the APK
+      # plus an update.json in the shared extended format (the shape
+      # Apps Updater's GitHubSource reads: file / versionName /
+      # versionCode / sha256 / size). Version fields are read back
+      # from the built APK itself, never restated by hand. Branch and
+      # dispatch builds stop at the artifact upload above.
+      - name: Generate update.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          APK=app/build/outputs/apk/release/findmy-mac.apk
+          AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
+          BADGING=$("$AAPT2" dump badging "$APK" | head -1)
+          VERSION_NAME=$(echo "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          VERSION_CODE=$(echo "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
+          SHA256=$(sha256sum "$APK" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$APK")
+          printf '%s' "{\"file\": \"findmy-mac.apk\", \"versionName\": \"$VERSION_NAME\", \"versionCode\": $VERSION_CODE, \"sha256\": \"$SHA256\", \"size\": $SIZE}" > update.json
+          cat update.json
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              app/build/outputs/apk/release/findmy-mac.apk update.json --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              app/build/outputs/apk/release/findmy-mac.apk update.json \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
