@@ -66,14 +66,6 @@ android {
     }
 }
 
-// Fixed release artifact name across all releases: findmy-mac.apk
-androidComponents {
-    onVariants(selector().withBuildType("release")) { variant ->
-        variant.outputs.forEach { output ->
-            output.outputFileName.set("findmy-mac.apk")
-        }
-    }
-}
 
 dependencies {
     implementation(libs.androidx.core.ktx)

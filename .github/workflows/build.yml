@@ -44,6 +44,10 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
         run: ./gradlew assembleRelease --stacktrace
 
+      - name: Name the release artifact
+        # Fixed APK file name across all releases: findmy-mac.apk
+        run: cp app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/findmy-mac.apk
+
       - name: Verify APK signature
         run: |
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
