@@ -9,6 +9,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /**
@@ -76,6 +77,9 @@ class ICloudService private constructor() {
     // 客户端配置（参考 main.js）
     private val clientId: String = generateClientId()
     private val widgetKey = "83545bf919730e51dbfba24e7e8a78d2"
+    // OAuth client id of the modern (SRP + 2FA) flow; the same id
+    // the 2FA verify/trust calls below already use.
+    private val oauthClientId = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d"
     private val clientBuildNumber = "2018Project35"
     private val clientMasteringNumber = "2018B29"
     private val locale = "ja_JP"
@@ -164,7 +168,7 @@ class ICloudService private constructor() {
                 if (!loginSuccess) {
                     return@withContext LoginResult(
                         success = false,
-                        errorMessage = "账户登录失败"
+                        errorMessage = "Account login failed"
                     )
                 }
                 
@@ -192,7 +196,7 @@ class ICloudService private constructor() {
                 )
                 
             } catch (e: Exception) {
-                lastError = e.message ?: "未知错误"
+                lastError = e.message ?: "Unknown error"
                 
                 // 如果还有重试次数，延迟后重试
                 if (attempt < retryCount - 1) {
@@ -205,60 +209,127 @@ class ICloudService private constructor() {
         // 所有重试都失败
         return@withContext LoginResult(
             success = false,
-            errorMessage = lastError ?: "登录失败，已重试 $retryCount 次"
+            errorMessage = lastError ?: "Sign-in failed after $retryCount attempts"
         )
     }
     
     /**
-     * 获取认证令牌（参考 setup.js 的 getAuthToken）
+     * Sign in with SRP (the pyicloud flow), replacing the legacy
+     * clear-text password POST to /appleauth/auth/signin, which Apple
+     * now refuses with HTTP 503 (verified 2026-11-21).
+     *
+     * Steps (see SrpClient for the maths):
+     * 1. POST /appleauth/auth/signin/init with the client ephemeral A.
+     * 2. Process the returned challenge (salt, B, iteration, protocol).
+     * 3. POST /appleauth/auth/signin/complete with m1 and the expected
+     *    server proof m2. When Apple returns an "m2" it is verified
+     *    against the locally computed proof, and on HTTP 200 a missing
+     *    or mismatching m2 fails the login.
+     * Session headers are then harvested from the complete response
+     * exactly as the legacy flow harvested them from the sign-in
+     * response, and the 200/409 handling below (including the
+     * hsa2 -> 2FA branch) is unchanged.
      */
     private fun getAuthToken(email: String, password: String): AuthResult {
-        // 使用与 Node.js 参考代码完全一致的 User-Agent
-        val userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/603.3.1 (KHTML, like Gecko) Version/10.1.2 Safari/603.3.1"
-        
-        // 构建客户端信息（参考 setup.js line 16-22）
-        val xAppleIFDClientInfo = mapOf(
-            "U" to userAgent,
-            "L" to locale,
-            "Z" to "GMT+02:00",  // 使用与参考代码一致的时区
-            "V" to "1.1",
-            "F" to ""
-        )
-        
-        val loginData = mapOf(
-            "accountName" to email,
-            "password" to password,
-            "rememberMe" to true,
-            "trustTokens" to emptyList<String>()
-        )
-        
-        val requestBody = gson.toJson(loginData).toRequestBody("application/json".toMediaType())
-        
-        // 按照参考代码的顺序添加请求头（setup.js line 30-38）
-        val request = Request.Builder()
-            .url("https://idmsa.apple.com/appleauth/auth/signin")
-            .post(requestBody)
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Referer", "https://idmsa.apple.com/appleauth/auth/signin")
-            .addHeader("Accept", "application/json, text/javascript, */*; q=0.01")
-            .addHeader("User-Agent", userAgent)
-            .addHeader("Origin", "https://idmsa.apple.com")
-            .addHeader("X-Apple-Widget-Key", widgetKey)
-            .addHeader("X-Requested-With", "XMLHttpRequest")
-            .addHeader("X-Apple-I-FD-Client-Info", gson.toJson(xAppleIFDClientInfo))
-            .addHeader("Accept-Language", "$language,en;q=0.9")
-            .addHeader("Accept-Encoding", "gzip, deflate, br")
-            .addHeader("Connection", "keep-alive")
-            .build()
-        
-        val response = client.newCall(request).execute()
-        val responseBody = response.body?.string()
-        
-        
-        // 打印响应头用于调试
-        response.headers.forEach { (name, value) ->
+        val srpClient = SrpClient(email, password)
+
+        // Step 1: signin/init
+        val initBody = JsonObject().apply {
+            addProperty("a", Base64.getEncoder().encodeToString(srpClient.publicA))
+            addProperty("accountName", email)
+            add("protocols", gson.toJsonTree(listOf("s2k", "s2k_fo")))
         }
-        
+        val initResponse = executeSrpRequest(
+            "https://idmsa.apple.com/appleauth/auth/signin/init",
+            initBody, null, null
+        )
+        val initBodyText = initResponse.body?.string()
+        if (initResponse.code != 200 || initBodyText == null) {
+            return AuthResult(
+                success = false,
+                errorMessage = srpFailureMessage(initResponse.code, initBodyText)
+            )
+        }
+
+        val initJson = try {
+            gson.fromJson(initBodyText, JsonObject::class.java)
+        } catch (e: Exception) {
+            null
+        }
+        var salt: ByteArray? = null
+        var serverB: ByteArray? = null
+        var iterations: Int? = null
+        var protocol: String? = null
+        var challenge: String? = null
+        try {
+            salt = initJson?.get("salt")?.asString?.let { decodeBase64(it) }
+            serverB = initJson?.get("b")?.asString?.let { decodeBase64(it) }
+            iterations = initJson?.get("iteration")?.asInt
+            protocol = initJson?.get("protocol")?.asString
+            challenge = initJson?.get("c")?.asString
+        } catch (e: Exception) {
+        }
+        if (salt == null || serverB == null || iterations == null || protocol == null || challenge == null) {
+            return AuthResult(
+                success = false,
+                errorMessage = "Sign-in failed: Apple returned an incomplete SRP challenge"
+            )
+        }
+        val initScnt = initResponse.header("scnt")
+        val initSessionId = initResponse.header("X-Apple-ID-Session-Id")
+
+        // Step 2: process the challenge (PBKDF2 + SRP-6a proofs)
+        if (!srpClient.processChallenge(salt, serverB, iterations, protocol)) {
+            return AuthResult(
+                success = false,
+                errorMessage = "Sign-in failed: could not process Apple's SRP challenge"
+            )
+        }
+
+        // Step 3: signin/complete
+        val completeBody = JsonObject().apply {
+            addProperty("accountName", email)
+            addProperty("c", challenge)
+            addProperty("m1", Base64.getEncoder().encodeToString(srpClient.clientProofM1))
+            addProperty("m2", Base64.getEncoder().encodeToString(srpClient.expectedServerProofM2))
+            addProperty("rememberMe", true)
+            add(
+                "trustTokens",
+                gson.toJsonTree(trustToken?.let { listOf(it) } ?: emptyList<String>())
+            )
+        }
+        val response = executeSrpRequest(
+            "https://idmsa.apple.com/appleauth/auth/signin/complete?isRememberMeEnabled=true",
+            completeBody, initScnt, initSessionId
+        )
+        val responseBody = response.body?.string()
+
+        // Verify the server proof: a returned "m2" must equal the
+        // locally computed H_AMK, and on HTTP 200 the proof is
+        // required. (On 409 the 2FA + trust + accountLogin chain that
+        // follows is itself server-validated.)
+        val completeJson = responseBody?.let {
+            try {
+                gson.fromJson(it, JsonObject::class.java)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val serverM2 = completeJson?.get("m2")?.asString?.let { decodeBase64(it) }
+        if (serverM2 != null) {
+            if (!srpClient.verifyServerProof(serverM2)) {
+                return AuthResult(
+                    success = false,
+                    errorMessage = "Sign-in failed: Apple's server proof (m2) did not verify"
+                )
+            }
+        } else if (response.code == 200) {
+            return AuthResult(
+                success = false,
+                errorMessage = "Sign-in failed: Apple did not return a server proof (m2)"
+            )
+        }
+
         return when (response.code) {
             200 -> {
                 // 保存会话信息（参考 HEADER_DATA）
@@ -267,107 +338,104 @@ class ICloudService private constructor() {
                 scnt = response.header("scnt")
                 accountCountry = response.header("X-Apple-ID-Account-Country")  // 重要：保存账户国家代码
                 trustToken = response.header("X-Apple-TwoSV-Trust-Token")  // 保存信任令牌
-                
-                
+
+
                 // 检查是否需要 2FA（参考 main.js line 227）
                 responseBody?.let {
                     try {
                         val jsonResponse = gson.fromJson(it, JsonObject::class.java)
                         val authType = jsonResponse.get("authType")?.asString
-                        
+
                         if (authType == "hsa2") {
                             requiresTwoFactor = true
                             return AuthResult(
                                 success = false,
                                 requiresTwoFactor = true,
-                                errorMessage = "需要双因素认证"
+                                errorMessage = "Two-factor authentication is required"
                             )
                         }
                     } catch (e: Exception) {
                     }
                 }
-                
+
                 AuthResult(success = true, token = sessionToken)
             }
             409 -> {
                 // 409 Conflict - 通常表示需要额外验证或账户状态异常
-                
+
                 // 保存关键的会话头信息（参考 HEADER_DATA）
                 sessionToken = response.header("X-Apple-Session-Token")
                 sessionId = response.header("X-Apple-ID-Session-Id")
                 scnt = response.header("scnt")
                 accountCountry = response.header("X-Apple-ID-Account-Country")  // 重要！
                 trustToken = response.header("X-Apple-TwoSV-Trust-Token")
-                
-                
-                // 先打印原始响应体
-                
+
+
                 // 尝试解析响应体
                 responseBody?.let { body ->
                     try {
                         // 先尝试解析为 JsonElement 以处理不同类型
                         val jsonElement = gson.fromJson(body, com.google.gson.JsonElement::class.java)
-                        
+
                         // 如果是字符串类型，可能是简单的文本响应
                         if (jsonElement.isJsonPrimitive && jsonElement.asJsonPrimitive.isString) {
                             val message = jsonElement.asString
-                            
+
                             // 根据响应内容判断是否需要 2FA
-                            if (message.contains("hsa2", ignoreCase = true) || 
-                                message.contains("two factor", ignoreCase = true) ||
-                                message.contains("双因素", ignoreCase = true)) {
+                            if (message.contains("hsa2", ignoreCase = true) ||
+                                message.contains("two factor", ignoreCase = true)) {
                                 requiresTwoFactor = true
                                 return AuthResult(
                                     success = false,
                                     requiresTwoFactor = true,
-                                    errorMessage = "需要双因素认证码"
+                                    errorMessage = "Two-factor authentication code required"
                                 )
                             }
-                            
+
                             return AuthResult(
                                 success = false,
                                 errorMessage = message
                             )
                         }
-                        
+
                         // 如果是 JSON 对象
                         if (jsonElement.isJsonObject) {
                             val jsonResponse = jsonElement.asJsonObject
-                            
+
                             // 检查是否需要双因素认证
                             val authType = jsonResponse.get("authType")?.asString
                             val serviceErrors = jsonResponse.getAsJsonArray("serviceErrors")
-                            
-                            if (authType == "hsa2" || serviceErrors?.any { 
-                                it.asJsonObject.get("code")?.asString == "-22993" 
+
+                            if (authType == "hsa2" || serviceErrors?.any {
+                                it.asJsonObject.get("code")?.asString == "-22993"
                             } == true) {
                                 requiresTwoFactor = true
                                 return AuthResult(
                                     success = false,
                                     requiresTwoFactor = true,
-                                    errorMessage = "需要双因素认证码"
+                                    errorMessage = "Two-factor authentication code required"
                                 )
                             }
-                            
+
                             // 其他错误
                             val errorMsg = serviceErrors?.firstOrNull()
-                                ?.asJsonObject?.get("message")?.asString 
-                                ?: "账户需要额外验证"
-                            
-                            
+                                ?.asJsonObject?.get("message")?.asString
+                                ?: "The account needs additional verification"
+
+
                             return AuthResult(
                                 success = false,
                                 errorMessage = errorMsg
                             )
                         }
-                        
+
                         // 未知格式
                         AuthResult(
                             success = false,
-                            errorMessage = "服务器返回未知格式: $jsonElement"
+                            errorMessage = "Sign-in failed: Apple returned an unexpected response"
                         )
                     } catch (e: Exception) {
-                        
+
                         // 由于我们已经有了会话信息，可能是 2FA
                         // 检查响应头中的 X-Apple-TwoSV-Trust-Eligible
                         val twoSvEligible = response.header("X-Apple-TwoSV-Trust-Eligible")
@@ -376,13 +444,13 @@ class ICloudService private constructor() {
                             return AuthResult(
                                 success = false,
                                 requiresTwoFactor = true,
-                                errorMessage = "需要双因素认证码"
+                                errorMessage = "Two-factor authentication code required"
                             )
                         }
-                        
+
                         AuthResult(
                             success = false,
-                            errorMessage = "账户验证失败: ${e.message}"
+                            errorMessage = "Account verification failed: ${e.message}"
                         )
                     }
                 } ?: run {
@@ -393,12 +461,12 @@ class ICloudService private constructor() {
                         AuthResult(
                             success = false,
                             requiresTwoFactor = true,
-                            errorMessage = "需要双因素认证码"
+                            errorMessage = "Two-factor authentication code required"
                         )
                     } else {
                         AuthResult(
                             success = false,
-                            errorMessage = "账户需要验证"
+                            errorMessage = "The account needs verification"
                         )
                     }
                 }
@@ -406,24 +474,82 @@ class ICloudService private constructor() {
             503 -> {
                 AuthResult(
                     success = false,
-                    errorMessage = "Apple 服务器限流 (503)。建议: 1) 等待后重试 2) 尝试更换网络 3) 检查账号状态"
+                    errorMessage = "Sign-in failed (HTTP 503): Apple's servers are busy or rate-limiting. Wait a while and try again."
                 )
             }
             401, 403 -> {
                 AuthResult(
                     success = false,
-                    errorMessage = "账号或密码错误"
+                    errorMessage = "Incorrect Apple ID or password (HTTP ${response.code})"
                 )
             }
             else -> {
                 AuthResult(
                     success = false,
-                    errorMessage = "登录失败 (${response.code})"
+                    errorMessage = "Sign-in failed (HTTP ${response.code})"
                 )
             }
         }
     }
-    
+
+    /**
+     * One SRP sign-in request (init or complete) with the OAuth header
+     * set the 2FA path already uses. The scnt / session-id headers
+     * from the init response are carried into the complete request.
+     */
+    private fun executeSrpRequest(
+        url: String,
+        body: JsonObject,
+        scntHeader: String?,
+        sessionIdHeader: String?
+    ): Response {
+        val builder = Request.Builder()
+            .url(url)
+            .post(gson.toJson(body).toRequestBody("application/json".toMediaType()))
+            .addHeader("Accept", "application/json, text/javascript")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("X-Apple-OAuth-Client-Id", oauthClientId)
+            .addHeader("X-Apple-OAuth-Client-Type", "firstPartyAuth")
+            .addHeader("X-Apple-OAuth-Redirect-URI", "https://www.icloud.com")
+            .addHeader("X-Apple-OAuth-Require-Grant-Code", "true")
+            .addHeader("X-Apple-OAuth-Response-Mode", "web_message")
+            .addHeader("X-Apple-OAuth-Response-Type", "code")
+            .addHeader("X-Apple-OAuth-State", clientId)
+            .addHeader("X-Apple-Widget-Key", oauthClientId)
+            .addHeader("Referer", "https://idmsa.apple.com/")
+            .addHeader("User-Agent", userAgent)
+        scntHeader?.let { builder.addHeader("scnt", it) }
+        sessionIdHeader?.let { builder.addHeader("X-Apple-ID-Session-Id", it) }
+        return client.newCall(builder.build()).execute()
+    }
+
+    private fun decodeBase64(value: String): ByteArray? {
+        return try {
+            Base64.getDecoder().decode(value)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Error text for a failed SRP step, always carrying the HTTP status. */
+    private fun srpFailureMessage(code: Int, body: String?): String {
+        val serverMessage = body?.let {
+            try {
+                gson.fromJson(it, JsonObject::class.java)
+                    ?.getAsJsonArray("serviceErrors")
+                    ?.firstOrNull()?.asJsonObject?.get("message")?.asString
+            } catch (e: Exception) {
+                null
+            }
+        }
+        return when {
+            serverMessage != null -> "Sign-in failed (HTTP $code): $serverMessage"
+            code == 503 -> "Sign-in failed (HTTP 503): Apple's servers are busy or rate-limiting. Wait a while and try again."
+            code == 401 || code == 403 -> "Sign-in failed (HTTP $code): incorrect Apple ID or password."
+            else -> "Sign-in failed (HTTP $code)."
+        }
+    }
+
     /**
      * 账户登录（参考 setup.js 的 accountLogin）
      */
@@ -634,7 +760,7 @@ class ICloudService private constructor() {
             if (sessionToken == null || sessionId == null || scnt == null) {
                 return@withContext LoginResult(
                     success = false,
-                    errorMessage = "会话已过期，请重新登录"
+                    errorMessage = "The session has expired. Please sign in again."
                 )
             }
             
@@ -707,7 +833,7 @@ class ICloudService private constructor() {
                     if (errorCode == -21669) {
                         return@withContext LoginResult(
                             success = false,
-                            errorMessage = "验证码错误，请重试"
+                            errorMessage = "Incorrect verification code. Please try again."
                         )
                     }
                     
@@ -715,7 +841,7 @@ class ICloudService private constructor() {
                     if (errorCode != null && errorCode < 0) {
                         return@withContext LoginResult(
                             success = false,
-                            errorMessage = errorMessage ?: "验证失败 (错误码: $errorCode)"
+                            errorMessage = errorMessage ?: "Verification failed (error code: $errorCode)"
                         )
                     }
                 } catch (e: Exception) {
@@ -738,19 +864,19 @@ class ICloudService private constructor() {
                         } else {
                             LoginResult(
                                 success = false,
-                                errorMessage = "2FA验证成功，但账户登录失败"
+                                errorMessage = "Two-factor verification succeeded, but account login failed"
                             )
                         }
                     } ?: LoginResult(
                         success = false,
-                        errorMessage = "缺少会话令牌"
+                        errorMessage = "Missing session token"
                     )
                 }
                 412 -> {
                     // 412 表示需要重新认证
                     LoginResult(
                         success = false,
-                        errorMessage = "会话已过期，请重新登录"
+                        errorMessage = "The session has expired. Please sign in again."
                     )
                 }
                 401 -> {
@@ -768,40 +894,40 @@ class ICloudService private constructor() {
                             } else {
                                 return@withContext LoginResult(
                                     success = false,
-                                    errorMessage = "2FA验证成功，但账户登录失败"
+                                    errorMessage = "Two-factor verification succeeded, but account login failed"
                                 )
                             }
                         } ?: run {
                             return@withContext LoginResult(
                                 success = false,
-                                errorMessage = "缺少会话令牌"
+                                errorMessage = "Missing session token"
                             )
                         }
                     } else {
                         // 401但没有更新会话，真正的认证失败
                         return@withContext LoginResult(
                             success = false,
-                            errorMessage = "验证码错误或会话已过期"
+                            errorMessage = "Incorrect verification code, or the session has expired"
                         )
                     }
                 }
                 403 -> {
                     return@withContext LoginResult(
                         success = false,
-                        errorMessage = "验证失败 (${response.code})"
+                        errorMessage = "Verification failed (HTTP ${response.code})"
                     )
                 }
                 else -> {
                     return@withContext LoginResult(
                         success = false,
-                        errorMessage = "验证失败 (${response.code})"
+                        errorMessage = "Verification failed (HTTP ${response.code})"
                     )
                 }
             }
         } catch (e: Exception) {
             LoginResult(
                 success = false,
-                errorMessage = "验证失败: ${e.message}"
+                errorMessage = "Verification failed: ${e.message}"
             )
         }
     }
