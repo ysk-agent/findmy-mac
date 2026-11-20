@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.tabs.TabLayout
 import kotlinx.coroutines.launch
 import org.maplibre.android.MapLibre
 import org.maplibre.android.annotations.Marker
@@ -37,15 +38,24 @@ import org.maplibre.android.maps.Style
  * no conversion is applied (the GCJ-02 converter and the old map
  * SDK were deleted in batches 1 and 2 respectively).
  *
- * Refresh: while this activity is in the foreground the target device
- * is re-located on a timer whose interval the user controls (batch:
- * v0.1.2). The settings live in [RefreshSettingsStore]: an on/off
+ * Refresh: while this activity is in the foreground the displayed
+ * devices are re-located on a timer whose interval the user controls
+ * (v0.1.2). The settings live in [RefreshSettingsStore]: an on/off
  * switch plus an interval picked from [RefreshSettings] presets,
  * defaulting to on / 120 s. The 120 s default was set in batch 2 (the
  * upstream polled every 30 s): only one device is located now
  * (server-side, via selectedDevice), so 30 s polling bought nothing
  * but extra requests against Apple's rate limits and extra battery
  * use. The manual refresh button works regardless of the switch.
+ *
+ * Tabs (v0.1.3): the screen has two tabs. "My Mac" is the view
+ * described above (the saved target device, narrowed server-side).
+ * "Family" shows the devices shared with the user through Family
+ * Sharing: a fetch with fmly = true, filtered client-side to
+ * fmlyShare devices by [DeviceFilter.familyOnly]. The auto-refresh
+ * settings are per tab, and the timer always follows the ACTIVE
+ * tab's settings and fetches the active tab's data set; switching
+ * tabs restarts the timer under the newly active tab's settings.
  */
 class MapActivity : AppCompatActivity() {
 
@@ -90,12 +100,27 @@ class MapActivity : AppCompatActivity() {
     // UI components
     private lateinit var toolbar: Toolbar
     private lateinit var fabRefresh: FloatingActionButton
+    private lateinit var tabLayout: TabLayout
     private lateinit var btnChangeTarget: Button
     private lateinit var switchAutoRefresh: SwitchCompat
     private lateinit var btnInterval: Button
     private lateinit var recyclerView: RecyclerView
     private lateinit var tvDeviceCount: TextView
     private lateinit var progressBar: ProgressBar
+
+    // Tabs: the list, markers, status line and auto-refresh controls
+    // all follow the active tab. Each tab keeps its own last
+    // displayed data set, so switching back redraws instantly and a
+    // fetch that completes after a tab switch cannot clobber the
+    // other tab's view (it only updates its own cache).
+    private var activeTab: RefreshTab = RefreshTab.MY_MAC
+    private var myMacDevices: List<DeviceData> = emptyList()
+    private var familyDevices: List<DeviceData> = emptyList()
+    private var familyFetched = false
+
+    // True while the switch/interval controls are being synced to a
+    // newly active tab, so the sync does not fire their listeners.
+    private var syncingTabControls = false
 
     // Map markers, keyed by DeviceData.id
     private val markers = mutableMapOf<String, Marker>()
@@ -117,18 +142,20 @@ class MapActivity : AppCompatActivity() {
 
     private val autoRefreshRunnable = object : Runnable {
         override fun run() {
-            // Re-read the persisted settings every cycle, so a change
-            // takes effect without restarting the app even if a UI
-            // path forgot to restart the timer explicitly.
-            if (!refreshSettingsStore.autoRefreshEnabled) {
+            // Re-read the ACTIVE tab's persisted settings every cycle,
+            // so a change takes effect without restarting the app even
+            // if a UI path forgot to restart the timer explicitly.
+            // The timer fetches the active tab's data set only.
+            val tab = activeTab
+            if (!refreshSettingsStore.autoRefreshEnabled(tab)) {
                 isTimerRunning = false
                 return
             }
             refreshCount++
-            refreshDevices()
+            refreshActiveTab()
             handler.postDelayed(
                 this,
-                refreshSettingsStore.intervalSeconds * 1000L
+                refreshSettingsStore.intervalSeconds(tab) * 1000L
             )
         }
     }
@@ -195,15 +222,16 @@ class MapActivity : AppCompatActivity() {
     }
 
     /**
-     * Schedule the auto-refresh timer. Called from onResume; a no-op
-     * when the timer is already running or the user has switched
-     * auto-refresh off in the persisted settings.
+     * Schedule the auto-refresh timer under the ACTIVE tab's settings.
+     * Called from onResume and after a tab switch or settings change;
+     * a no-op when the timer is already running or the active tab's
+     * auto-refresh is switched off in the persisted settings.
      */
     private fun startAutoRefresh() {
         if (isTimerRunning) {
             return
         }
-        if (!refreshSettingsStore.autoRefreshEnabled) {
+        if (!refreshSettingsStore.autoRefreshEnabled(activeTab)) {
             return
         }
         isTimerRunning = true
@@ -211,7 +239,7 @@ class MapActivity : AppCompatActivity() {
         // First auto refresh is delayed: onCreate already refreshed.
         handler.postDelayed(
             autoRefreshRunnable,
-            refreshSettingsStore.intervalSeconds * 1000L
+            refreshSettingsStore.intervalSeconds(activeTab) * 1000L
         )
     }
 
@@ -236,6 +264,7 @@ class MapActivity : AppCompatActivity() {
     private fun initViews() {
         toolbar = findViewById(R.id.toolbar)
         fabRefresh = findViewById(R.id.fabRefresh)
+        tabLayout = findViewById(R.id.tabLayout)
         btnChangeTarget = findViewById(R.id.btnChangeTarget)
         switchAutoRefresh = findViewById(R.id.switchAutoRefresh)
         btnInterval = findViewById(R.id.btnInterval)
@@ -250,8 +279,9 @@ class MapActivity : AppCompatActivity() {
             finish()
         }
 
+        // The manual refresh button refreshes the ACTIVE tab.
         fabRefresh.setOnClickListener {
-            refreshDevices()
+            refreshActiveTab()
         }
 
         // Change the target device later: fetch the full device list
@@ -260,12 +290,17 @@ class MapActivity : AppCompatActivity() {
             fetchDevicesForPicker()
         }
 
-        // Auto-refresh controls. Reflect the persisted settings first,
-        // then attach listeners so the initial state does not fire them.
-        switchAutoRefresh.isChecked = refreshSettingsStore.autoRefreshEnabled
-        updateIntervalButtonLabel()
+        initTabs()
+
+        // Auto-refresh controls. They always show and edit the ACTIVE
+        // tab's settings. Reflect the persisted settings first, then
+        // attach listeners so the initial state does not fire them.
+        syncTabControls()
         switchAutoRefresh.setOnCheckedChangeListener { _, isChecked ->
-            refreshSettingsStore.autoRefreshEnabled = isChecked
+            if (syncingTabControls) {
+                return@setOnCheckedChangeListener
+            }
+            refreshSettingsStore.setAutoRefreshEnabled(activeTab, isChecked)
             // Off stops the timer immediately; on restarts it with the
             // current interval (applyRefreshSettingsToTimer handles both).
             applyRefreshSettingsToTimer()
@@ -275,24 +310,128 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateIntervalButtonLabel() {
-        btnInterval.text =
-            "Every ${RefreshSettings.intervalLabel(refreshSettingsStore.intervalSeconds)}"
+    /** Build the two tabs and wire selection to [onActiveTabChanged]. */
+    private fun initTabs() {
+        tabLayout.addTab(tabLayout.newTab().setText("My Mac"))
+        tabLayout.addTab(tabLayout.newTab().setText("Family"))
+        tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab) {
+                val newTab =
+                    if (tab.position == 1) RefreshTab.FAMILY else RefreshTab.MY_MAC
+                if (newTab != activeTab) {
+                    activeTab = newTab
+                    onActiveTabChanged()
+                }
+            }
+
+            override fun onTabUnselected(tab: TabLayout.Tab) {
+            }
+
+            override fun onTabReselected(tab: TabLayout.Tab) {
+            }
+        })
     }
 
     /**
-     * Single-choice dialog over the preset intervals. Choosing one
-     * persists it and, when auto-refresh is on, restarts the timer
+     * A different tab became active: sync the auto-refresh controls
+     * to that tab's settings, redraw its cached data set, restart
+     * the timer under its settings, and fetch on first use (the
+     * Family tab fetches when first opened; the My Mac tab fetches
+     * if the first-run picker is still outstanding, which a quick
+     * tab switch could otherwise strand).
+     */
+    private fun onActiveTabChanged() {
+        syncTabControls()
+        displayActiveTabDevices()
+        applyRefreshSettingsToTimer()
+        when (activeTab) {
+            RefreshTab.FAMILY -> {
+                if (!familyFetched) {
+                    refreshFamilyDevices()
+                }
+            }
+            RefreshTab.MY_MAC -> {
+                if (targetStore.targetDeviceId == null && !firstRunPickerShown) {
+                    refreshDevices()
+                }
+            }
+        }
+    }
+
+    /** Reflect the active tab's persisted settings in the controls. */
+    private fun syncTabControls() {
+        syncingTabControls = true
+        switchAutoRefresh.isChecked =
+            refreshSettingsStore.autoRefreshEnabled(activeTab)
+        updateIntervalButtonLabel()
+        syncingTabControls = false
+    }
+
+    /** Redraw the active tab's cached data set (list, markers, status). */
+    private fun displayActiveTabDevices() {
+        when (activeTab) {
+            RefreshTab.MY_MAC -> {
+                updateDeviceList(myMacDevices)
+                updateMapMarkers(myMacDevices)
+                tvDeviceCount.text = myMacStatusText()
+            }
+            RefreshTab.FAMILY -> {
+                updateDeviceList(familyDevices)
+                updateMapMarkers(familyDevices)
+                tvDeviceCount.text = familyStatusText()
+            }
+        }
+    }
+
+    private fun myMacStatusText(): String {
+        if (targetStore.targetDeviceId == null) {
+            return "${myMacDevices.size} devices found. Please choose the target device."
+        }
+        if (myMacDevices.isEmpty()) {
+            return "Target device not found"
+        }
+        val onlineDevices = myMacDevices.count { it.location != null }
+        return "${myMacDevices.size} device(s), $onlineDevices online"
+    }
+
+    private fun familyStatusText(): String {
+        if (!familyFetched) {
+            return "Family devices not loaded yet"
+        }
+        if (familyDevices.isEmpty()) {
+            return "No family devices are shared with you"
+        }
+        val onlineDevices = familyDevices.count { it.location != null }
+        return "${familyDevices.size} family device(s), $onlineDevices online"
+    }
+
+    /** Fetch the active tab's data set (timer tick and manual refresh). */
+    private fun refreshActiveTab() {
+        when (activeTab) {
+            RefreshTab.MY_MAC -> refreshDevices()
+            RefreshTab.FAMILY -> refreshFamilyDevices()
+        }
+    }
+
+    private fun updateIntervalButtonLabel() {
+        btnInterval.text =
+            "Every ${RefreshSettings.intervalLabel(refreshSettingsStore.intervalSeconds(activeTab))}"
+    }
+
+    /**
+     * Single-choice dialog over the preset intervals, editing the
+     * ACTIVE tab's interval. Choosing one persists it for that tab
+     * and, when that tab's auto-refresh is on, restarts the timer
      * with the new interval.
      */
     private fun showIntervalPicker() {
         val presets = RefreshSettings.INTERVAL_PRESETS_SECONDS
         val labels = presets.map { RefreshSettings.intervalLabel(it) }.toTypedArray()
-        val checked = presets.indexOf(refreshSettingsStore.intervalSeconds)
+        val checked = presets.indexOf(refreshSettingsStore.intervalSeconds(activeTab))
         AlertDialog.Builder(this)
             .setTitle("Auto-refresh interval")
             .setSingleChoiceItems(labels, checked) { dialog, which ->
-                refreshSettingsStore.intervalSeconds = presets[which]
+                refreshSettingsStore.setIntervalSeconds(activeTab, presets[which])
                 updateIntervalButtonLabel()
                 applyRefreshSettingsToTimer()
                 dialog.dismiss()
@@ -383,7 +522,7 @@ class MapActivity : AppCompatActivity() {
     }
 
     /**
-     * Refresh the target device's location.
+     * Refresh the target device's location (the My Mac tab's fetch).
      *
      * Batch 2 (Mac-only narrowing):
      * - fmly is always false, so family-shared devices are not located.
@@ -394,12 +533,18 @@ class MapActivity : AppCompatActivity() {
      *   by DeviceFilter (by id, falling back to deviceClass == "mac").
      * - On the first run (no saved target) the unfiltered list is shown
      *   and the target picker is opened once.
+     *
+     * The result is cached in [myMacDevices]; the UI is updated only
+     * while the My Mac tab is active, so a fetch completing after a
+     * tab switch cannot clobber the Family tab's view.
      */
     private fun refreshDevices() {
         lifecycleScope.launch {
             try {
                 showLoading(true)
-                tvDeviceCount.text = "Refreshing device location..."
+                if (activeTab == RefreshTab.MY_MAC) {
+                    tvDeviceCount.text = "Refreshing device location..."
+                }
 
                 val targetId = targetStore.targetDeviceId
                 val result = findMyService.refreshDevices(
@@ -411,14 +556,18 @@ class MapActivity : AppCompatActivity() {
                     lastFetchedDevices = response.devices
 
                     if (targetId == null) {
-                        // First run: nothing saved yet. Show everything
-                        // and ask the user to pick the target (their Mac).
-                        updateDeviceList(response.devices)
-                        updateMapMarkers(response.devices)
-                        tvDeviceCount.text = "${response.devices.size} devices found. Please choose the target device."
-                        if (!firstRunPickerShown && response.devices.isNotEmpty()) {
-                            firstRunPickerShown = true
-                            showTargetPicker(response.devices)
+                        // First run: nothing saved yet. Cache everything
+                        // and, while this tab is active, show it all and
+                        // ask the user to pick the target (their Mac).
+                        myMacDevices = response.devices
+                        if (activeTab == RefreshTab.MY_MAC) {
+                            updateDeviceList(response.devices)
+                            updateMapMarkers(response.devices)
+                            tvDeviceCount.text = myMacStatusText()
+                            if (!firstRunPickerShown && response.devices.isNotEmpty()) {
+                                firstRunPickerShown = true
+                                showTargetPicker(response.devices)
+                            }
                         }
                         return@onSuccess
                     }
@@ -426,38 +575,102 @@ class MapActivity : AppCompatActivity() {
                     val filteredDevices = DeviceFilter.keepTarget(response.devices, targetId)
 
                     // WGS84 coordinates pass straight through (batch 1).
-                    updateDeviceList(filteredDevices)
-                    updateMapMarkers(filteredDevices)
+                    myMacDevices = filteredDevices
+                    if (activeTab == RefreshTab.MY_MAC) {
+                        updateDeviceList(filteredDevices)
+                        updateMapMarkers(filteredDevices)
+                        tvDeviceCount.text = myMacStatusText()
 
-                    val totalDevices = filteredDevices.size
-                    val onlineDevices = filteredDevices.count { it.location != null }
-                    tvDeviceCount.text = "$totalDevices device(s), $onlineDevices online"
-
-                    if (totalDevices == 0) {
-                        tvDeviceCount.text = "Target device not found"
-                        if (refreshCount == 0) {
+                        if (filteredDevices.isEmpty() && refreshCount == 0) {
                             Toast.makeText(this@MapActivity, "Target device not found", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }.onFailure { error ->
-                    tvDeviceCount.text = "Failed to load"
-                    if (refreshCount <= 1) {
-                        Toast.makeText(
-                            this@MapActivity,
-                            "Refresh failed: ${error.message}",
-                            Toast.LENGTH_LONG
-                        ).show()
+                    if (activeTab == RefreshTab.MY_MAC) {
+                        tvDeviceCount.text = "Failed to load"
+                        if (refreshCount <= 1) {
+                            Toast.makeText(
+                                this@MapActivity,
+                                "Refresh failed: ${error.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                 }
 
             } catch (e: Exception) {
-                tvDeviceCount.text = "Failed to load"
-                if (refreshCount <= 1) {
-                    Toast.makeText(
-                        this@MapActivity,
-                        "Refresh failed: ${e.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
+                if (activeTab == RefreshTab.MY_MAC) {
+                    tvDeviceCount.text = "Failed to load"
+                    if (refreshCount <= 1) {
+                        Toast.makeText(
+                            this@MapActivity,
+                            "Refresh failed: ${e.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            } finally {
+                showLoading(false)
+            }
+        }
+    }
+
+    /**
+     * Refresh the Family tab's devices.
+     *
+     * The fetch asks Apple for family devices too (fmly = true, no
+     * selectedDevice narrowing) and the result is filtered
+     * client-side to devices shared through Family Sharing
+     * ([DeviceFilter.familyOnly]). Called when the Family tab is
+     * first opened, by the manual refresh button while that tab is
+     * active, and by the auto-refresh timer under the Family tab's
+     * own settings. The My Mac tab's data and narrowing are not
+     * touched.
+     */
+    private fun refreshFamilyDevices() {
+        lifecycleScope.launch {
+            try {
+                showLoading(true)
+                if (activeTab == RefreshTab.FAMILY) {
+                    tvDeviceCount.text = "Refreshing family devices..."
+                }
+
+                val result = findMyService.refreshDevices(
+                    locateAllDevices = true,
+                    deviceId = null
+                )
+
+                result.onSuccess { response ->
+                    familyDevices = DeviceFilter.familyOnly(response.devices)
+                    familyFetched = true
+                    if (activeTab == RefreshTab.FAMILY) {
+                        updateDeviceList(familyDevices)
+                        updateMapMarkers(familyDevices)
+                        tvDeviceCount.text = familyStatusText()
+                    }
+                }.onFailure { error ->
+                    if (activeTab == RefreshTab.FAMILY) {
+                        tvDeviceCount.text = "Failed to load"
+                        if (refreshCount <= 1) {
+                            Toast.makeText(
+                                this@MapActivity,
+                                "Refresh failed: ${error.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+
+            } catch (e: Exception) {
+                if (activeTab == RefreshTab.FAMILY) {
+                    tvDeviceCount.text = "Failed to load"
+                    if (refreshCount <= 1) {
+                        Toast.makeText(
+                            this@MapActivity,
+                            "Refresh failed: ${e.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
             } finally {
                 showLoading(false)

@@ -39,6 +39,15 @@ object DeviceFilter {
     }
 
     /**
+     * Family-tab filter: keep only devices shared with the user
+     * through Family Sharing (the parser's fmlyShare flag). Order is
+     * preserved. Own devices (fmlyShare false) belong to the My Mac
+     * side and are dropped here.
+     */
+    fun familyOnly(devices: List<DeviceData>): List<DeviceData> =
+        devices.filter { it.fmlyShare }
+
+    /**
      * One-line picker label: device name plus its class and model, so
      * same-named devices can still be told apart in the picker.
      */

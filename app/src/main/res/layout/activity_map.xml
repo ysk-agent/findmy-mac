@@ -59,6 +59,18 @@
             android:layout_marginBottom="16dp"
             android:background="@drawable/bottom_sheet_handle" />
 
+        <!-- Device tabs: "My Mac" (the saved target device) and
+             "Family" (fmlyShare devices). Tabs are added in code.
+             The list, markers and auto-refresh controls below all
+             follow the active tab. -->
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/tabLayout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            app:tabGravity="fill"
+            app:tabMode="fixed" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

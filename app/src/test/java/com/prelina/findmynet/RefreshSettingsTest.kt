@@ -62,4 +62,106 @@ class RefreshSettingsTest {
         assertEquals("5 min", RefreshSettings.intervalLabel(300))
         assertEquals("10 min", RefreshSettings.intervalLabel(600))
     }
+
+    // --- Per-tab settings (v0.1.3) ---
+
+    @Test
+    fun `both tabs share the same defaults`() {
+        // The defaults are tab-independent constants; pinning them
+        // here covers the "both tabs default to enabled at 120 s"
+        // rule that RefreshSettingsStore relies on for fresh keys.
+        for (tab in RefreshTab.values()) {
+            assertEquals(
+                "tab $tab",
+                RefreshSettings.DEFAULT_AUTO_REFRESH_ENABLED,
+                RefreshSettings.resolveAutoRefreshEnabled(null, null)
+            )
+            assertEquals(
+                "tab $tab",
+                RefreshSettings.DEFAULT_INTERVAL_SECONDS,
+                RefreshSettings.resolveIntervalSeconds(null, null)
+            )
+            // The Family tab has no legacy value to inherit.
+            if (tab == RefreshTab.FAMILY) {
+                assertEquals(null, RefreshSettings.legacyAutoRefreshEnabledKey(tab))
+                assertEquals(null, RefreshSettings.legacyIntervalSecondsKey(tab))
+            }
+        }
+    }
+
+    @Test
+    fun `per-tab keys are all distinct and differ from the legacy keys`() {
+        // Independence of the two tabs' settings rests on the store
+        // writing each tab under its own keys: assert no collisions
+        // among the four per-tab keys or with the v0.1.2 keys.
+        val keys = listOf(
+            RefreshSettings.autoRefreshEnabledKey(RefreshTab.MY_MAC),
+            RefreshSettings.intervalSecondsKey(RefreshTab.MY_MAC),
+            RefreshSettings.autoRefreshEnabledKey(RefreshTab.FAMILY),
+            RefreshSettings.intervalSecondsKey(RefreshTab.FAMILY),
+            RefreshSettings.LEGACY_KEY_AUTO_REFRESH_ENABLED,
+            RefreshSettings.LEGACY_KEY_INTERVAL_SECONDS
+        )
+        assertEquals(keys.size, keys.toSet().size)
+    }
+
+    @Test
+    fun `legacy fallback exists only for the My Mac tab`() {
+        assertEquals(
+            RefreshSettings.LEGACY_KEY_AUTO_REFRESH_ENABLED,
+            RefreshSettings.legacyAutoRefreshEnabledKey(RefreshTab.MY_MAC)
+        )
+        assertEquals(
+            RefreshSettings.LEGACY_KEY_INTERVAL_SECONDS,
+            RefreshSettings.legacyIntervalSecondsKey(RefreshTab.MY_MAC)
+        )
+        assertEquals(null, RefreshSettings.legacyAutoRefreshEnabledKey(RefreshTab.FAMILY))
+        assertEquals(null, RefreshSettings.legacyIntervalSecondsKey(RefreshTab.FAMILY))
+    }
+
+    @Test
+    fun `stored per-tab value wins over the legacy value`() {
+        assertEquals(
+            false,
+            RefreshSettings.resolveAutoRefreshEnabled(perTab = false, legacy = true)
+        )
+        assertEquals(
+            true,
+            RefreshSettings.resolveAutoRefreshEnabled(perTab = true, legacy = false)
+        )
+        assertEquals(
+            300,
+            RefreshSettings.resolveIntervalSeconds(perTab = 300, legacy = 60)
+        )
+        assertEquals(
+            30,
+            RefreshSettings.resolveIntervalSeconds(perTab = 30, legacy = 600)
+        )
+    }
+
+    @Test
+    fun `legacy value is used when no per-tab value is stored`() {
+        // The v0.1.2 -> v0.1.3 migration path for the My Mac tab:
+        // a user who changed the single v0.1.2 setting keeps it.
+        assertEquals(
+            false,
+            RefreshSettings.resolveAutoRefreshEnabled(perTab = null, legacy = false)
+        )
+        assertEquals(
+            600,
+            RefreshSettings.resolveIntervalSeconds(perTab = null, legacy = 600)
+        )
+    }
+
+    @Test
+    fun `resolved intervals are sanitized whichever source they came from`() {
+        assertEquals(
+            RefreshSettings.DEFAULT_INTERVAL_SECONDS,
+            RefreshSettings.resolveIntervalSeconds(perTab = 45, legacy = 300)
+        )
+        assertEquals(
+            RefreshSettings.DEFAULT_INTERVAL_SECONDS,
+            RefreshSettings.resolveIntervalSeconds(perTab = null, legacy = 45)
+        )
+    }
 }
