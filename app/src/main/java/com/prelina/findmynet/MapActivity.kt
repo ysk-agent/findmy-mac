@@ -10,6 +10,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.appcompat.widget.Toolbar
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -37,18 +38,19 @@ import org.maplibre.android.maps.Style
  * SDK were deleted in batches 1 and 2 respectively).
  *
  * Refresh: while this activity is in the foreground the target device
- * is re-located every [REFRESH_INTERVAL_MS]. The interval was lengthened
- * from the upstream 30 s to 120 s in batch 2: only one device is located
- * now (server-side, via selectedDevice), so 30 s polling bought nothing
- * but extra requests against Apple's rate limits and extra battery use.
+ * is re-located on a timer whose interval the user controls (batch:
+ * v0.1.2). The settings live in [RefreshSettingsStore]: an on/off
+ * switch plus an interval picked from [RefreshSettings] presets,
+ * defaulting to on / 120 s. The 120 s default was set in batch 2 (the
+ * upstream polled every 30 s): only one device is located now
+ * (server-side, via selectedDevice), so 30 s polling bought nothing
+ * but extra requests against Apple's rate limits and extra battery
+ * use. The manual refresh button works regardless of the switch.
  */
 class MapActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MapActivity"
-
-        // Batch 2: 120 s (was 30 s upstream) - see class doc above.
-        private const val REFRESH_INTERVAL_MS = 120_000L
 
         // Minimal inline MapLibre style: a single OSM raster source.
         // No API key and no third-party style host are needed, and the
@@ -83,11 +85,14 @@ class MapActivity : AppCompatActivity() {
     private lateinit var findMyService: FindMyService
     private lateinit var iCloudService: ICloudService
     private lateinit var targetStore: TargetDeviceStore
+    private lateinit var refreshSettingsStore: RefreshSettingsStore
 
     // UI components
     private lateinit var toolbar: Toolbar
     private lateinit var fabRefresh: FloatingActionButton
     private lateinit var btnChangeTarget: Button
+    private lateinit var switchAutoRefresh: SwitchCompat
+    private lateinit var btnInterval: Button
     private lateinit var recyclerView: RecyclerView
     private lateinit var tvDeviceCount: TextView
     private lateinit var progressBar: ProgressBar
@@ -103,18 +108,28 @@ class MapActivity : AppCompatActivity() {
     private var lastFetchedDevices: List<DeviceData> = emptyList()
     private var firstRunPickerShown = false
 
-    // Foreground auto-refresh
+    // Foreground auto-refresh timer. isTimerRunning tracks whether
+    // the runnable is currently scheduled; whether it may run at all
+    // is the user's persisted preference in RefreshSettingsStore.
     private val handler = Handler(Looper.getMainLooper())
-    private var isAutoRefreshEnabled = true
+    private var isTimerRunning = false
     private var refreshCount = 0
 
     private val autoRefreshRunnable = object : Runnable {
         override fun run() {
-            if (isAutoRefreshEnabled) {
-                refreshCount++
-                refreshDevices()
-                handler.postDelayed(this, REFRESH_INTERVAL_MS)
+            // Re-read the persisted settings every cycle, so a change
+            // takes effect without restarting the app even if a UI
+            // path forgot to restart the timer explicitly.
+            if (!refreshSettingsStore.autoRefreshEnabled) {
+                isTimerRunning = false
+                return
             }
+            refreshCount++
+            refreshDevices()
+            handler.postDelayed(
+                this,
+                refreshSettingsStore.intervalSeconds * 1000L
+            )
         }
     }
 
@@ -129,6 +144,7 @@ class MapActivity : AppCompatActivity() {
         iCloudService = ICloudService.getInstance()
         findMyService = FindMyService(iCloudService)
         targetStore = TargetDeviceStore(applicationContext)
+        refreshSettingsStore = RefreshSettingsStore(applicationContext)
 
         initViews()
         initMap(savedInstanceState)
@@ -178,26 +194,51 @@ class MapActivity : AppCompatActivity() {
         mapView.onSaveInstanceState(outState)
     }
 
+    /**
+     * Schedule the auto-refresh timer. Called from onResume; a no-op
+     * when the timer is already running or the user has switched
+     * auto-refresh off in the persisted settings.
+     */
     private fun startAutoRefresh() {
-        if (!isAutoRefreshEnabled) {
-            isAutoRefreshEnabled = true
-            refreshCount = 0
-            // First auto refresh is delayed: onCreate already refreshed.
-            handler.postDelayed(autoRefreshRunnable, REFRESH_INTERVAL_MS)
+        if (isTimerRunning) {
+            return
         }
+        if (!refreshSettingsStore.autoRefreshEnabled) {
+            return
+        }
+        isTimerRunning = true
+        refreshCount = 0
+        // First auto refresh is delayed: onCreate already refreshed.
+        handler.postDelayed(
+            autoRefreshRunnable,
+            refreshSettingsStore.intervalSeconds * 1000L
+        )
     }
 
+    /** Stop the timer (lifecycle pause/destroy, or the switch going off). */
     private fun stopAutoRefresh() {
-        if (isAutoRefreshEnabled) {
-            isAutoRefreshEnabled = false
-            handler.removeCallbacks(autoRefreshRunnable)
-        }
+        isTimerRunning = false
+        handler.removeCallbacks(autoRefreshRunnable)
+    }
+
+    /**
+     * Apply the current persisted settings to the live timer after the
+     * user flips the switch or picks a new interval: drop any pending
+     * tick and, when auto-refresh is on, schedule fresh with the
+     * current interval. These controls are only reachable while the
+     * activity is resumed, so rescheduling here is safe.
+     */
+    private fun applyRefreshSettingsToTimer() {
+        stopAutoRefresh()
+        startAutoRefresh()
     }
 
     private fun initViews() {
         toolbar = findViewById(R.id.toolbar)
         fabRefresh = findViewById(R.id.fabRefresh)
         btnChangeTarget = findViewById(R.id.btnChangeTarget)
+        switchAutoRefresh = findViewById(R.id.switchAutoRefresh)
+        btnInterval = findViewById(R.id.btnInterval)
         recyclerView = findViewById(R.id.recyclerViewDevices)
         tvDeviceCount = findViewById(R.id.tvDeviceCount)
         progressBar = findViewById(R.id.progressBar)
@@ -218,6 +259,46 @@ class MapActivity : AppCompatActivity() {
         btnChangeTarget.setOnClickListener {
             fetchDevicesForPicker()
         }
+
+        // Auto-refresh controls. Reflect the persisted settings first,
+        // then attach listeners so the initial state does not fire them.
+        switchAutoRefresh.isChecked = refreshSettingsStore.autoRefreshEnabled
+        updateIntervalButtonLabel()
+        switchAutoRefresh.setOnCheckedChangeListener { _, isChecked ->
+            refreshSettingsStore.autoRefreshEnabled = isChecked
+            // Off stops the timer immediately; on restarts it with the
+            // current interval (applyRefreshSettingsToTimer handles both).
+            applyRefreshSettingsToTimer()
+        }
+        btnInterval.setOnClickListener {
+            showIntervalPicker()
+        }
+    }
+
+    private fun updateIntervalButtonLabel() {
+        btnInterval.text =
+            "Every ${RefreshSettings.intervalLabel(refreshSettingsStore.intervalSeconds)}"
+    }
+
+    /**
+     * Single-choice dialog over the preset intervals. Choosing one
+     * persists it and, when auto-refresh is on, restarts the timer
+     * with the new interval.
+     */
+    private fun showIntervalPicker() {
+        val presets = RefreshSettings.INTERVAL_PRESETS_SECONDS
+        val labels = presets.map { RefreshSettings.intervalLabel(it) }.toTypedArray()
+        val checked = presets.indexOf(refreshSettingsStore.intervalSeconds)
+        AlertDialog.Builder(this)
+            .setTitle("Auto-refresh interval")
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                refreshSettingsStore.intervalSeconds = presets[which]
+                updateIntervalButtonLabel()
+                applyRefreshSettingsToTimer()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun initMap(savedInstanceState: Bundle?) {
