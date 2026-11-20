@@ -52,10 +52,10 @@ class FindMyService(private val iCloudService: ICloudService) {
             val trustToken = iCloudService.trustToken
 
             if (findmeUrl.isNullOrEmpty()) {
-                return@withContext Result.failure(Exception("findme_url未设置，请先登录"))
+                return@withContext Result.failure(Exception("Find My service URL is not set. Please sign in first."))
             }
             if (sessionToken.isNullOrEmpty()) {
-                return@withContext Result.failure(Exception("session_token未设置，请先登录"))
+                return@withContext Result.failure(Exception("Session token is not set. Please sign in first."))
             }
 
 
@@ -152,7 +152,7 @@ class FindMyService(private val iCloudService: ICloudService) {
                             val deviceJson = element.asJsonObject
                             
                             // 📋 打印每个设备的 location 字段
-                            val deviceName = deviceJson.get("name")?.asString ?: "未知"
+                            val deviceName = deviceJson.get("name")?.asString ?: "Unknown"
                             val locationElement = deviceJson.get("location")
                             
                             
@@ -187,30 +187,30 @@ class FindMyService(private val iCloudService: ICloudService) {
                             kotlinx.coroutines.delay(1000)
                             return@withContext refreshDevices(locateAllDevices, deviceId, retryCount + 1)
                         } else {
-                            Result.failure(Exception("认证失败 (${response.code})，会话刷新失败"))
+                            Result.failure(Exception("Authentication failed (HTTP ${response.code}); session refresh failed"))
                         }
                     } else {
-                        Result.failure(Exception("认证失败 (${response.code})，已重试 $retryCount 次"))
+                        Result.failure(Exception("Authentication failed (HTTP ${response.code}) after $retryCount retries"))
                     }
                 }
                 
                 501 -> {
                     // Service Not Available
-                    Result.failure(Exception("iCloud定位服务不可用"))
+                    Result.failure(Exception("The iCloud location service is unavailable"))
                 }
                 
                 401 -> {
                     // Unauthorized - 需要重新登录
-                    Result.failure(Exception("认证失败，请重新登录"))
+                    Result.failure(Exception("Authentication failed. Please sign in again."))
                 }
                 
                 503 -> {
                     // Connection Error
-                    Result.failure(Exception("服务器连接错误，请稍后重试"))
+                    Result.failure(Exception("Server connection error (HTTP 503). Please try again later."))
                 }
                 
                 else -> {
-                    Result.failure(Exception("请求失败: ${response.code}, $responseBody"))
+                    Result.failure(Exception("Request failed (HTTP ${response.code}): $responseBody"))
                 }
             }
 
@@ -229,7 +229,7 @@ class FindMyService(private val iCloudService: ICloudService) {
      */
     private fun parseDeviceData(json: JsonObject): DeviceData {
         val id = json.get("id")?.asString ?: ""
-        val name = json.get("name")?.asString ?: "未知设备"
+        val name = json.get("name")?.asString ?: "Unknown device"
         
         //  关键修复: 安全解析 location 字段（参考 iCloud3 V3 的 is_location_data_available）
         // 检查: LOCATION not in device_data or device_data[LOCATION] == {} or device_data[LOCATION] is None
@@ -358,7 +358,7 @@ class FindMyService(private val iCloudService: ICloudService) {
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
             val findmeUrl = iCloudService.findme_url ?: return@withContext Result.failure(
-                Exception("findme_url未设置")
+                Exception("Find My service URL is not set")
             )
             
             val url = "$findmeUrl$PLAYSOUND_ENDPOINT"
@@ -383,7 +383,7 @@ class FindMyService(private val iCloudService: ICloudService) {
             
             when (response.code) {
                 200, 205 -> Result.success(true)
-                else -> Result.failure(Exception("播放声音失败: ${response.code}"))
+                else -> Result.failure(Exception("Play Sound failed (HTTP ${response.code})"))
             }
         } catch (e: Exception) {
             Result.failure(e)

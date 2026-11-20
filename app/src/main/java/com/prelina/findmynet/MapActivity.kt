@@ -318,7 +318,7 @@ class MapActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 showLoading(true)
-                tvDeviceCount.text = "正在刷新设备位置..."
+                tvDeviceCount.text = "Refreshing device location..."
 
                 val targetId = targetStore.targetDeviceId
                 val result = findMyService.refreshDevices(
@@ -334,7 +334,7 @@ class MapActivity : AppCompatActivity() {
                         // and ask the user to pick the target (their Mac).
                         updateDeviceList(response.devices)
                         updateMapMarkers(response.devices)
-                        tvDeviceCount.text = "共 ${response.devices.size} 个设备，请选择目标设备"
+                        tvDeviceCount.text = "${response.devices.size} devices found. Please choose the target device."
                         if (!firstRunPickerShown && response.devices.isNotEmpty()) {
                             firstRunPickerShown = true
                             showTargetPicker(response.devices)
@@ -350,31 +350,31 @@ class MapActivity : AppCompatActivity() {
 
                     val totalDevices = filteredDevices.size
                     val onlineDevices = filteredDevices.count { it.location != null }
-                    tvDeviceCount.text = "共 $totalDevices 个设备，$onlineDevices 个在线"
+                    tvDeviceCount.text = "$totalDevices device(s), $onlineDevices online"
 
                     if (totalDevices == 0) {
-                        tvDeviceCount.text = "未找到目标设备"
+                        tvDeviceCount.text = "Target device not found"
                         if (refreshCount == 0) {
-                            Toast.makeText(this@MapActivity, "未找到目标设备", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MapActivity, "Target device not found", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }.onFailure { error ->
-                    tvDeviceCount.text = "加载失败"
+                    tvDeviceCount.text = "Failed to load"
                     if (refreshCount <= 1) {
                         Toast.makeText(
                             this@MapActivity,
-                            "刷新失败: ${error.message}",
+                            "Refresh failed: ${error.message}",
                             Toast.LENGTH_LONG
                         ).show()
                     }
                 }
 
             } catch (e: Exception) {
-                tvDeviceCount.text = "加载失败"
+                tvDeviceCount.text = "Failed to load"
                 if (refreshCount <= 1) {
                     Toast.makeText(
                         this@MapActivity,
-                        "刷新失败: ${e.message}",
+                        "Refresh failed: ${e.message}",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -400,21 +400,21 @@ class MapActivity : AppCompatActivity() {
                 result.onSuccess { response ->
                     lastFetchedDevices = response.devices
                     if (response.devices.isEmpty()) {
-                        Toast.makeText(this@MapActivity, "未找到任何设备", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MapActivity, "No devices found", Toast.LENGTH_SHORT).show()
                     } else {
                         showTargetPicker(response.devices)
                     }
                 }.onFailure { error ->
                     Toast.makeText(
                         this@MapActivity,
-                        "刷新失败: ${error.message}",
+                        "Refresh failed: ${error.message}",
                         Toast.LENGTH_LONG
                     ).show()
                 }
             } catch (e: Exception) {
                 Toast.makeText(
                     this@MapActivity,
-                    "刷新失败: ${e.message}",
+                    "Refresh failed: ${e.message}",
                     Toast.LENGTH_LONG
                 ).show()
             } finally {
@@ -431,18 +431,18 @@ class MapActivity : AppCompatActivity() {
     private fun showTargetPicker(devices: List<DeviceData>) {
         val labels = devices.map { DeviceFilter.pickerLabel(it) }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("选择目标设备")
+            .setTitle("Choose target device")
             .setItems(labels) { _, which ->
                 val chosen = devices[which]
                 targetStore.targetDeviceId = chosen.id
                 Toast.makeText(
                     this,
-                    "目标设备: ${chosen.name}",
+                    "Target device: ${chosen.name}",
                     Toast.LENGTH_SHORT
                 ).show()
                 refreshDevices()
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
@@ -480,7 +480,7 @@ class MapActivity : AppCompatActivity() {
                 MarkerOptions()
                     .position(position)
                     .title(device.deviceDisplayName.ifEmpty { device.name })
-                    .snippet("电量: ${device.batteryLevel}% | ${location.getFormattedTime()}")
+                    .snippet("Battery: ${device.batteryLevel}% | ${location.getFormattedTime()}")
             )
             markers[device.id] = marker
             boundsBuilder.include(position)
@@ -516,14 +516,14 @@ class MapActivity : AppCompatActivity() {
             } else {
                 Toast.makeText(
                     this,
-                    "该设备位置不可用",
+                    "Location is not available for this device",
                     Toast.LENGTH_SHORT
                 ).show()
             }
         } ?: run {
             Toast.makeText(
                 this,
-                "该设备没有位置信息",
+                "This device has no location information",
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -534,7 +534,7 @@ class MapActivity : AppCompatActivity() {
             try {
                 Toast.makeText(
                     this@MapActivity,
-                    "正在向 ${device.name} 发送播放声音请求...",
+                    "Sending a Play Sound request to ${device.name}...",
                     Toast.LENGTH_SHORT
                 ).show()
 
@@ -543,20 +543,20 @@ class MapActivity : AppCompatActivity() {
                 result.onSuccess {
                     Toast.makeText(
                         this@MapActivity,
-                        "已成功向 ${device.name} 发送播放声音请求",
+                        "Play Sound request sent to ${device.name}",
                         Toast.LENGTH_LONG
                     ).show()
                 }.onFailure { error ->
                     Toast.makeText(
                         this@MapActivity,
-                        "播放声音失败: ${error.message}",
+                        "Play Sound failed: ${error.message}",
                         Toast.LENGTH_LONG
                     ).show()
                 }
             } catch (e: Exception) {
                 Toast.makeText(
                     this@MapActivity,
-                    "播放声音失败: ${e.message}",
+                    "Play Sound failed: ${e.message}",
                     Toast.LENGTH_LONG
                 ).show()
             }

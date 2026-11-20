@@ -23,7 +23,7 @@
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
             android:background="#CC000000"
-            app:title="FindMyNet"
+            app:title="Find My Mac"
             app:titleTextColor="@android:color/white"
             app:navigationIcon="?attr/homeAsUpIndicator" />
 
@@ -37,7 +37,7 @@
         android:layout_marginTop="72dp"
         android:layout_marginEnd="16dp"
         android:src="@android:drawable/ic_menu_rotate"
-        android:contentDescription="刷新设备位置"
+        android:contentDescription="Refresh device location"
         app:backgroundTint="?attr/colorPrimary"
         app:tint="@android:color/white" />
 
@@ -73,7 +73,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="设备列表"
+                android:text="Devices"
                 android:textSize="18sp"
                 android:textStyle="bold"
                 android:textColor="?android:attr/textColorPrimary" />
@@ -82,7 +82,7 @@
                 android:id="@+id/btnChangeTarget"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="目标设备" />
+                android:text="Target device" />
 
             <ProgressBar
                 android:id="@+id/progressBar"

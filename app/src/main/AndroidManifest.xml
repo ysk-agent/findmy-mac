@@ -49,7 +49,7 @@
         <activity
             android:name="com.prelina.findmynet.MapActivity"
             android:exported="false"
-            android:label="FindMyNet"
+            android:label="Find My Mac"
             android:theme="@style/Theme.FindMyNet.AppCompat" />
     </application>
 

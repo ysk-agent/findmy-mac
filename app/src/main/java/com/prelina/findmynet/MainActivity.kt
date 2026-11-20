@@ -113,10 +113,10 @@ fun FindMyApp() {
                             context.startActivity(intent)
                             (context as? ComponentActivity)?.finish() // 关闭登录页面
                         } else {
-                            errorMessage = result.errorMessage ?: "验证码错误"
+                            errorMessage = result.errorMessage ?: "Incorrect verification code"
                         }
                     } catch (e: Exception) {
-                        errorMessage = "验证失败: ${e.message}"
+                        errorMessage = "Verification failed: ${e.message}"
                     } finally {
                         isLoading = false
                     }
@@ -137,7 +137,7 @@ fun FindMyApp() {
             CircularProgressIndicator()
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "正在检查登录状态...",
+                text = "Checking sign-in status...",
                 style = MaterialTheme.typography.bodyMedium
             )
             return@Column
@@ -145,7 +145,7 @@ fun FindMyApp() {
         
             // 登录界面
             Text(
-                text = "FindMyNet",
+                text = "Find My Mac",
                 style = MaterialTheme.typography.headlineLarge,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
@@ -163,13 +163,13 @@ fun FindMyApp() {
                     modifier = Modifier.padding(12.dp)
                 ) {
                     Text(
-                        text = " 重要提示",
+                        text = "Important",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "如果遇到问题请到GitHub提交issue！",
+                        text = "If you run into any problems, please file an issue on GitHub.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
@@ -189,7 +189,7 @@ fun FindMyApp() {
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("密码") },
+                label = { Text("Password") },
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !isLoading
@@ -217,20 +217,20 @@ fun FindMyApp() {
                             } else if (result.requiresTwoFactor) {
                                 // 显示 2FA 对话框
                                 showTwoFactorDialog = true
-                                errorMessage = "请输入验证码"
+                                errorMessage = "Enter the verification code"
                             } else {
-                                errorMessage = result.errorMessage ?: "登录失败"
+                                errorMessage = result.errorMessage ?: "Sign-in failed"
                             }
                         } catch (e: java.net.UnknownHostException) {
-                            errorMessage = " 网络错误：无法连接到 Apple 服务器\n\n可能是设备的问题，请检查网络连接"
+                            errorMessage = "Network error: could not reach Apple's servers.\n\nPlease check your network connection."
                         } catch (e: java.io.IOException) {
                             if (e.message?.contains("503") == true) {
-                                errorMessage = " Apple 服务器繁忙 (503)\n\n可能的原因：\n• Apple 检测到非浏览器访问\n• 请求过于频繁"
+                                errorMessage = "Apple's servers returned HTTP 503 (temporarily unavailable).\n\nPlease wait a while and try again."
                             } else {
-                                errorMessage = "网络错误: ${e.message}"
+                                errorMessage = "Network error: ${e.message}"
                             }
                         } catch (e: Exception) {
-                            errorMessage = "错误: ${e.message}"
+                            errorMessage = "Error: ${e.message}"
                         } finally {
                             isLoading = false
                         }
@@ -246,7 +246,7 @@ fun FindMyApp() {
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
-                Text(if (isLoading) "登录中..." else "登录")
+                Text(if (isLoading) "Signing in..." else "Sign in")
             }
             
             Spacer(modifier = Modifier.height(8.dp))
@@ -261,28 +261,28 @@ fun FindMyApp() {
             OutlinedButton(
                 onClick = {
                     scope.launch {
-                        errorMessage = "🔍 测试网络连接...\n"
+                        errorMessage = "Testing network connection...\n"
                         try {
                             // 测试 DNS 解析
                             withContext(Dispatchers.IO) {
                                 val address = java.net.InetAddress.getByName("www.apple.com")
-                                errorMessage += " DNS 解析成功: ${address.hostAddress}\n"
+                                errorMessage += "DNS resolution OK: ${address.hostAddress}\n"
                                 
                                 // 测试 HTTPS 连接
                                 val url = java.net.URL("https://www.apple.com")
                                 val connection = url.openConnection()
                                 connection.connectTimeout = 5000
                                 connection.connect()
-                                errorMessage += " HTTPS 连接成功\n\n建议：网络正常，可以登录"
+                                errorMessage += "HTTPS connection OK\n\nThe network looks fine; you can sign in."
                             }
                         } catch (e: Exception) {
-                            errorMessage += " 连接失败: ${e.message}"
+                            errorMessage += "Connection failed: ${e.message}"
                         }
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(" 测试网络连接")
+                Text("Test network connection")
             }
 
             errorMessage?.let { msg ->
@@ -308,12 +308,12 @@ fun TwoFactorDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("双因素认证")
+            Text("Two-Factor Authentication")
         },
         text = {
             Column {
                 Text(
-                    text = "请输入发送到您设备的 6 位验证码",
+                    text = "Enter the 6-digit code sent to your devices",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
@@ -327,7 +327,7 @@ fun TwoFactorDialog(
                             error = null
                         }
                     },
-                    label = { Text("验证码") },
+                    label = { Text("Verification code") },
                     placeholder = { Text("000000") },
                     singleLine = true,
                     isError = error != null,
@@ -336,7 +336,7 @@ fun TwoFactorDialog(
                 )
                 
                 Text(
-                    text = " 提示：请查看您的 Apple 设备上的验证码",
+                    text = "Tip: check the code shown on your Apple devices",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp)
@@ -349,17 +349,17 @@ fun TwoFactorDialog(
                     if (code.length == 6) {
                         onCodeSubmit(code)
                     } else {
-                        error = "请输入完整的 6 位验证码"
+                        error = "Enter the full 6-digit code"
                     }
                 },
                 enabled = code.length == 6
             ) {
-                Text("验证")
+                Text("Verify")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text("Cancel")
             }
         }
     )

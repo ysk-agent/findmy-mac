@@ -30,7 +30,7 @@
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:src="@android:drawable/ic_menu_mylocation"
-                android:contentDescription="设备图标" />
+                android:contentDescription="Device icon" />
 
             <!-- 设备名称和型号 -->
             <LinearLayout
@@ -72,7 +72,7 @@
                     android:layout_width="20dp"
                     android:layout_height="20dp"
                     android:src="@android:drawable/ic_lock_power_off"
-                    android:contentDescription="电池图标" />
+                    android:contentDescription="Battery icon" />
 
                 <TextView
                     android:id="@+id/tvBatteryLevel"
@@ -111,7 +111,7 @@
                 <TextView
                     android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:text="坐标："
+                    android:text="Coordinates:"
                     android:textSize="14sp"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -136,7 +136,7 @@
                 <TextView
                     android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:text="精度："
+                    android:text="Accuracy:"
                     android:textSize="14sp"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -161,7 +161,7 @@
                 <TextView
                     android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:text="更新时间："
+                    android:text="Updated:"
                     android:textSize="14sp"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -186,7 +186,7 @@
                 <TextView
                     android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:text="状态："
+                    android:text="Status:"
                     android:textSize="14sp"
                     android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -197,7 +197,7 @@
                     android:layout_weight="1"
                     android:textSize="14sp"
                     android:textColor="?attr/colorOnSurface"
-                    tools:text="在线" />
+                    tools:text="Online" />
 
             </LinearLayout>
 
@@ -216,7 +216,7 @@
                 style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="播放声音"
+                android:text="Play Sound"
                 android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
@@ -225,7 +225,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:text="在地图上显示"
+                android:text="Show on map"
                 android:textSize="12sp" />
 
         </LinearLayout>

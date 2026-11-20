@@ -106,10 +106,10 @@ class DeviceAdapter(
 
                     // 设置状态文本
                     val statusText = when {
-                        location.isOld -> "离线 (位置过旧)"
-                        location.isInaccurate -> "在线 (位置不准确)"
-                        !location.locationFinished -> "定位中..."
-                        else -> "在线"
+                        location.isOld -> "Offline (location is old)"
+                        location.isInaccurate -> "Online (location is inaccurate)"
+                        !location.locationFinished -> "Locating..."
+                        else -> "Online"
                     }
                     tvDeviceStatus.text = statusText
 
@@ -121,13 +121,13 @@ class DeviceAdapter(
                     }
                     tvDeviceStatus.setTextColor(statusColor)
                 } ?: run {
-                    tvLocationCoordinates.text = "无位置数据"
+                    tvLocationCoordinates.text = "No location data"
                     tvLocationAccuracy.text = "-"
                     tvLocationTime.text = "-"
                     tvDeviceStatus.text = when (device.deviceStatus) {
-                        201 -> "设备离线"
-                        203 -> "定位服务已关闭"
-                        else -> "未知状态"
+                        201 -> "Device offline"
+                        203 -> "Location services are off"
+                        else -> "Unknown status"
                     }
                     tvDeviceStatus.setTextColor(android.graphics.Color.GRAY)
                 }
